@@ -1,0 +1,153 @@
+#include "Engine.h"
+
+__global__ stepCUDA(double* kernPositionTable ,double* kernDistanceTable, double* kernVelocityTable ,int  _size, double _acceleration)
+{
+		
+		_distanceTable[i] += fabs(_velocityTable[i]);
+		_positionTable[i] += _velocityTable[i];
+		if(_positionTable[i] > 0)
+		{
+			_velocityTable[i] -= _acceleration;
+		}
+		else if(_positionTable[i] < 0)
+		{
+			_velocityTable[i] += _acceleration;
+		}
+
+		if(rand()%2 == 0)
+		{
+			_velocityTable[i] = -_velocityTable[i];
+		}
+}
+
+Engine::Engine(int duration, int size, double acceleration)
+{
+	_duration = duration;
+	_size = size;
+	_acceleration = acceleration;
+	_positionTable = new double[_size];
+	_distanceTable = new double[_size];
+	_velocityTable = new double[_size];
+
+	std::default_random_engine generator;
+	std::normal_distribution<double> distribution(1,2.5);
+
+	for(int i = 0;i<_size;i++)
+	{
+		_velocityTable[i] = distribution(generator);
+		_distanceTable[i] = 0;
+		_positionTable[i] = 0;
+	}
+}
+Engine::~Engine()
+{
+	delete _positionTable;
+	delete _distanceTable;
+	delete _velocityTable;
+}
+
+void Engine::start()
+{
+	for(int i = 0;i<_duration;i++)
+	{
+		step();
+	}
+}
+
+void Engine::startCUDA()
+{
+
+	int block_size = 512;
+	int block_num = (_size + block_size - 1)/block_size;
+	double *kernVelocityTable;
+	double *kernDistanceTable;
+	double *kernPositionTable;
+
+	cudaMalloc((void**)&kernVelocityTable,sizeof(double)*_size);
+	cudaMalloc((void**)&kernDistanceTable,sizeof(double)*_size);
+	cudaMalloc((void**)&kernPositionTable,sizeof(double)*_size);
+
+	cudaMemcpy(kernVelocityTable,_velocityTable,sizeof(float)*_size,cudaMemcpyHostToDevice);
+	cudaMemcpy(kernDistanceTable,_distanceTable,sizeof(float)*_size,cudaMemcpyHostToDevice);
+	cudaMemcpy(kernPositionTable,_positionTable,sizeof(float)*_size,cudaMemcpyHostToDevice);
+
+	for(int i = 0;i<_duration;i++)
+	{
+		stepCUDA <<<block_num,block_size>>>(kernPositionTable, kernDistanceTable, kernVelocityTable,  _size, _acceleration);
+	}
+
+	cudaMemcpy(_distanceTable,kernDistanceTable,sizeof(float)*_size,cudaMemcpyDeviceToHost);
+	cudaMemcpy(_positionTable,kernPositionTable,sizeof(float)*_size,cudaMemcpyDeviceToHost);
+
+	cudaFree(kernDistanceTable);
+	cudaFree(kernPositionTable);
+	cudaFree(kernVelocityTable);
+}
+
+void Engine::print()
+{
+	std::cout << "distance vector" << std::endl;
+	for(int i = 0;i<_size;i++)
+	{
+		std::cout << _distanceTable[i] << " ";
+	}
+
+	std::cout << std::endl << "position vector" << std::endl;
+	for(int i = 0;i<_size;i++)
+	{
+		std::cout << _positionTable[i] << " ";
+	}
+
+	std::cout << std::endl << "velocity vector" << std::endl;
+	for(int i = 0;i<_size;i++)
+	{
+		std::cout << _velocityTable[i] << " ";
+	}
+}
+
+void Engine::savePositionToFile(std::string filename)
+{
+	std::ofstream file;
+	file.open(filename);
+	for(int i = 0;i<_size;i++)
+	{
+		file << _positionTable[i] << std::endl;
+	}
+	file.close();
+
+}
+void Engine::saveDistanceToFile(std::string filename)
+{
+
+	std::ofstream file;
+	file.open(filename);
+	for(int i = 0;i<_size;i++)
+	{
+		file << _distanceTable[i] << std::endl;
+	}
+	file.close();
+}
+
+void Engine::step()
+{
+	for(int i = 0;i<_size;i++)
+	{
+		_distanceTable[i] += fabs(_velocityTable[i]);
+		_positionTable[i] += _velocityTable[i];
+		if(_positionTable[i] > 0)
+		{
+			_velocityTable[i] -= _acceleration;
+		}
+		else if(_positionTable[i] < 0)
+		{
+			_velocityTable[i] += _acceleration;
+		}
+
+		if(rand()%2 == 0)
+		{
+			_velocityTable[i] = -_velocityTable[i];
+		}
+	}
+
+
+}
