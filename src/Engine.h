@@ -21,22 +21,30 @@ public:
 	void print();
 	void savePositionToFile(std::string filename);
 	void saveDistanceToFile(std::string filename);
+	void saveDistFlipNumDepToFile(std::string filename);
 	void savePositionHistToFile(std::string filename, int bids);
 	void saveDistanceHistToFile(std::string filename, int bids);
+	void saveFlipNumHistToFile(std::string filename, int bids);
 	float getAveragePosition();
 	float getAverageDistance();
-	static void saveHistToFile(std::string filename, float* data, int dataSize, int bids);
+	float getAverageFlipNum();
+	template<class T> static void saveHistToFile(std::string filename, T* data, int dataSize, int bids);
 	static void saveHistToFileRange(std::string filename, float* data, int dataSize, int bids, float min, float max);
 
 
+
 private:
+	void notifyCudaAllocError();
+	void notifyCudaCpyError();
 	void step();
 	float *_positionTable;
 	float *_distanceTable;
 	float *_velocityTable;
+	int *_flipDirTable;
+	float _acceleration;
 	int _size;
 	int _duration;
-	float _acceleration;
+	bool _errorOccur = false;
 
 };
 

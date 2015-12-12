@@ -14,12 +14,16 @@ __device__ float generate_curand(curandState* globalState, int idx)
 	return random;
 }
 
-__global__ void stepCUDA(float* positionTable ,float* distanceTable, float* velocityTable ,int  size, int duration, float acceleration, curandState *globalState)
+__global__ void stepCUDA(float* positionTable ,float* distanceTable, float* velocityTable , int* numFlipTable, int  size, int duration, float acceleration, curandState *globalState)
 {
 
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
 	if(i < size)
 	{
+		distanceTable[i] = 0;
+		positionTable[i] = 0;
+		numFlipTable[i] = 0;
+
 		for(int j = 0;j<duration;j++)
 		{
 			distanceTable[i] += fabs(velocityTable[i]);
@@ -36,6 +40,8 @@ __global__ void stepCUDA(float* positionTable ,float* distanceTable, float* velo
 			if(generate_curand(globalState,i) >= 0.5)
 			{
 				velocityTable[i] = -velocityTable[i];
+				numFlipTable[i]++;
+
 			}
 		}
 
@@ -51,6 +57,7 @@ Engine::Engine(int duration, int size, float acceleration)
 	_positionTable = new float[_size];
 	_distanceTable = new float[_size];
 	_velocityTable = new float[_size];
+	_flipDirTable = new int[_size];
 
 	std::default_random_engine generator(std::random_device{}());
 	std::normal_distribution<float> distribution(1,2.5);
@@ -60,6 +67,7 @@ Engine::Engine(int duration, int size, float acceleration)
 		_velocityTable[i] = distribution(generator);
 		_distanceTable[i] = 0;
 		_positionTable[i] = 0;
+		_flipDirTable[i] = 0;
 	}
 }
 Engine::~Engine()
@@ -67,6 +75,7 @@ Engine::~Engine()
 	delete _positionTable;
 	delete _distanceTable;
 	delete _velocityTable;
+	delete _flipDirTable;
 }
 
 void Engine::reset()
@@ -79,6 +88,7 @@ void Engine::reset()
 		_velocityTable[i] = distribution(generator);
 		_distanceTable[i] = 0;
 		_positionTable[i] = 0;
+		_flipDirTable[i] = 0;
 	}
 }
 
@@ -89,6 +99,17 @@ void Engine::start()
 
 }
 
+void Engine::notifyCudaAllocError()
+{
+	std::cout << "CUDA Alloc problem" << std::endl;
+	_errorOccur = true;
+}
+
+void Engine::notifyCudaCpyError()
+{
+	std::cout << "CUDA Memcpy problem" << std::endl;
+	_errorOccur = true;
+}
 void Engine::startCUDA()
 {
 
@@ -97,29 +118,34 @@ void Engine::startCUDA()
 	float *kernVelocityTable;
 	float *kernDistanceTable;
 	float *kernPositionTable;
+	int *kernFlipDirTable;
 	curandState *kernGlobalState;
 
-	cudaMalloc((void**)&kernVelocityTable,sizeof(float)*_size);
-	cudaMalloc((void**)&kernDistanceTable,sizeof(float)*_size);
-	cudaMalloc((void**)&kernPositionTable,sizeof(float)*_size);
-	cudaMalloc((void**)&kernGlobalState,sizeof(float)*_size);
+	if(cudaMalloc((void**)&kernVelocityTable,sizeof(float)*_size)!=cudaSuccess)notifyCudaAllocError();
+	if(cudaMalloc((void**)&kernDistanceTable,sizeof(float)*_size)!=cudaSuccess)notifyCudaAllocError();
+	if(cudaMalloc((void**)&kernPositionTable,sizeof(float)*_size)!=cudaSuccess)notifyCudaAllocError();
+	if(cudaMalloc((void**)&kernFlipDirTable,sizeof(int)*_size)!=cudaSuccess)notifyCudaAllocError();
+	if(cudaMalloc((void**)&kernGlobalState,sizeof(float)*_size)!=cudaSuccess)notifyCudaAllocError();
 
-	cudaMemcpy(kernVelocityTable,_velocityTable,sizeof(float)*_size,cudaMemcpyHostToDevice);
-	cudaMemcpy(kernDistanceTable,_distanceTable,sizeof(float)*_size,cudaMemcpyHostToDevice);
-	cudaMemcpy(kernPositionTable,_positionTable,sizeof(float)*_size,cudaMemcpyHostToDevice);
+	if(_errorOccur == false)
+	{
+		if(cudaMemcpy(kernVelocityTable,_velocityTable,sizeof(float)*_size,cudaMemcpyHostToDevice)!=cudaSuccess)notifyCudaCpyError();
+	}
 
-	setup_curand<<<block_num,block_size>>>(kernGlobalState,time(NULL));
+	if(_errorOccur == false)
+	{
+		setup_curand<<<block_num,block_size>>>(kernGlobalState,time(NULL));
+		stepCUDA <<<block_num,block_size>>>(kernPositionTable, kernDistanceTable, kernVelocityTable, kernFlipDirTable, _size, _duration, _acceleration, kernGlobalState);
+	}
 
-
-	stepCUDA <<<block_num,block_size>>>(kernPositionTable, kernDistanceTable, kernVelocityTable,  _size, _duration, _acceleration, kernGlobalState);
-
-
-	cudaMemcpy(_distanceTable,kernDistanceTable,sizeof(float)*_size,cudaMemcpyDeviceToHost);
-	cudaMemcpy(_positionTable,kernPositionTable,sizeof(float)*_size,cudaMemcpyDeviceToHost);
+	if(cudaMemcpy(_distanceTable,kernDistanceTable,sizeof(float)*_size,cudaMemcpyDeviceToHost)!=cudaSuccess)notifyCudaCpyError();
+	if(cudaMemcpy(_positionTable,kernPositionTable,sizeof(float)*_size,cudaMemcpyDeviceToHost)!=cudaSuccess)notifyCudaCpyError();
+	if(cudaMemcpy(_flipDirTable,kernFlipDirTable,sizeof(int)*_size,cudaMemcpyDeviceToHost)!=cudaSuccess)notifyCudaCpyError();
 
 	cudaFree(kernDistanceTable);
 	cudaFree(kernPositionTable);
 	cudaFree(kernVelocityTable);
+	cudaFree(kernFlipDirTable);
 	cudaFree(kernGlobalState);
 
 }
@@ -168,6 +194,17 @@ void Engine::saveDistanceToFile(std::string filename)
 	file.close();
 }
 
+void Engine::saveDistFlipNumDepToFile(std::string filename)
+{
+	std::ofstream file;
+	file.open(filename);
+	for(int i = 0;i<_size;i++)
+	{
+		file << _distanceTable[i] << " " << _flipDirTable[i] << std::endl;
+	}
+	file.close();
+}
+
 void Engine::step()
 {
 	for(int i = 0;i<_size;i++)
@@ -188,6 +225,7 @@ void Engine::step()
 			if(rand()%2 == 0)
 			{
 				_velocityTable[i] = -_velocityTable[i];
+				_flipDirTable[i]++;
 			}
 		}
 	}
@@ -215,32 +253,48 @@ float Engine::getAverageDistance()
 	return averDistance;
 }
 
+float Engine::getAverageFlipNum()
+{
+	float averFlipNum = 0;
+	for(int i = 0;i<_size;i++)
+	{
+		averFlipNum += _flipDirTable[i];
+	}
+	averFlipNum /= _size;
+	return averFlipNum;
+}
+
 void Engine::savePositionHistToFile(std::string filename, int bids)
 {
-	saveHistToFile(filename,_positionTable,_size,bids);
+	saveHistToFile<float>(filename,_positionTable,_size,bids);
 }
 void Engine::saveDistanceHistToFile(std::string filename, int bids)
 {
-	saveHistToFile(filename,_distanceTable,_size,bids);
+	saveHistToFile<float>(filename,_distanceTable,_size,bids);
 }
 
-void Engine::saveHistToFile(std::string filename, float* data, int dataSize, int bids)
+void Engine::saveFlipNumHistToFile(std::string filename, int bids)
+{
+	saveHistToFile<int>(filename,_flipDirTable,_size,bids);
+}
+
+template<class T>void Engine::saveHistToFile(std::string filename, T* data, int dataSize, int bids)
 {
 	std::ofstream file;
 	file.open(filename);
-	float min = data[0];
-	float max = data[0];
+	T min = data[0];
+	T max = data[0];
 	for(int i = 1;i<dataSize;i++)
 	{
 		if(data[i] > max)max = data[i];
 		else if(data[i] < min)min = data[i];
 	}
-	float stepSize = (max-min)/bids;
+	double stepSize = (double)(max-min)/bids;
 
 	for(int i = 0;i<bids-1;i++)
 	{
-		float minRange = min + i*stepSize;
-		float maxRange = min + (i+1)*stepSize;
+		double minRange = min + i*stepSize;
+		double maxRange = min + (i+1)*stepSize;
 		int rangeOccurs = 0;
 		for(int j = 0;j<dataSize;j++)
 		{
